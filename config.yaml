@@ -60,7 +60,9 @@ camera_demo:
 
 # WebRTC 配置
 webrtc:
-  ice_servers: []             # 局域网无需 STUN/TURN；公网部署需配置
+  ice_servers:
+    - urls: "stun:stun.l.google.com:19302"
+    - urls: "stun:stun1.l.google.com:19302"
   video_width: 640
   video_height: 480
   video_fps: 15

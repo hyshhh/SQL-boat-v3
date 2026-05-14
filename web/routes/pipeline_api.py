@@ -54,6 +54,31 @@ def _get_semaphore() -> asyncio.Semaphore:
     return _pipeline_semaphore
 
 
+def _get_rtc_config():
+    """从 config.yaml 读取 ICE 服务器配置，构建 RTCConfiguration"""
+    try:
+        cfg = load_config()
+        ice_servers_raw = cfg.get("webrtc", {}).get("ice_servers", [])
+    except Exception:
+        ice_servers_raw = []
+
+    if not ice_servers_raw:
+        # 默认使用 Google 公共 STUN
+        ice_servers_raw = [{"urls": "stun:stun.l.google.com:19302"}]
+
+    # 转换为 aiortc RTCIceServer 格式
+    servers = []
+    for s in ice_servers_raw:
+        server = {"urls": s["urls"]}
+        if "username" in s:
+            server["username"] = s["username"]
+        if "credential" in s:
+            server["credential"] = s["credential"]
+        servers.append(server)
+
+    return RTCConfiguration(iceServers=servers)
+
+
 # ── 全局状态 ──
 _running_processes: dict[str, asyncio.subprocess.Process] = {}
 _task_status: dict[str, dict[str, Any]] = {}
@@ -2008,7 +2033,7 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
     frames_dir = _get_browser_frames_dir(task_id) if not use_queue else None
 
     # 创建 PeerConnection
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(configuration=_get_rtc_config())
     _camera_webrtc_pcs[task_id] = pc
 
     @pc.on("connectionstatechange")
@@ -2101,8 +2126,7 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     _webrtc_video_queues[task_id] = frame_queue
 
     # 创建 PeerConnection
-    config = RTCConfiguration(iceServers=[])
-    pc = RTCPeerConnection(configuration=config)
+    pc = RTCPeerConnection(configuration=_get_rtc_config())
     _video_webrtc_pcs[task_id] = pc
 
     @pc.on("connectionstatechange")
