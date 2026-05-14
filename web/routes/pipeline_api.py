@@ -2091,10 +2091,6 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     pc = RTCPeerConnection(configuration=config)
     _video_webrtc_pcs[task_id] = pc
 
-    # 添加视频 Track
-    video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
-    pc.addTrack(video_track)
-
     # DataChannel 用于控制信令（检测结果推送等）
     dc = pc.createDataChannel("control")
     _webrtc_dc[task_id] = dc
@@ -2111,24 +2107,32 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
             except Exception:
                 pass
 
+    # 添加视频 Track（必须在 setRemoteDescription 之前）
+    video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
+    pc.addTrack(video_track)
+
     # 设置远程描述
     offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
     await pc.setRemoteDescription(offer)
 
-    # 修复 aiortc SDP 协商: _offerDirection 可能为 None 导致 createAnswer 崩溃
+    # 修复 aiortc: _offerDirection 可能为 None，从 SDP 推断并设置
+    offer_dir = "sendrecv"
+    for line in req.sdp.split("\n"):
+        stripped = line.strip().lower()
+        if stripped.startswith("a=sendonly"):
+            offer_dir = "sendonly"
+            break
+        elif stripped.startswith("a=recvonly"):
+            offer_dir = "recvonly"
+            break
+        elif stripped.startswith("a=inactive"):
+            offer_dir = "inactive"
+            break
+
     for t in pc.getTransceivers():
         if t._offerDirection is None:
-            # 从浏览器 offer SDP 中推断方向
-            offer_dir = "sendrecv"  # 默认值
-            sdp_lower = req.sdp.lower()
-            if "a=sendonly" in sdp_lower:
-                offer_dir = "sendonly"
-            elif "a=recvonly" in sdp_lower:
-                offer_dir = "recvonly"
-            elif "a=inactive" in sdp_lower:
-                offer_dir = "inactive"
             t._offerDirection = offer_dir
-            logger.info("修复 transceiver _offerDirection: %s", offer_dir)
+            logger.info("修复 _offerDirection → %s (task=%s)", offer_dir, task_id)
 
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
