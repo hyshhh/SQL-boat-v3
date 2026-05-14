@@ -2117,32 +2117,30 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
             except Exception:
                 pass
 
-    # 添加视频 Track（在 setRemoteDescription 之前，让 aiortc 匹配 offer 的 m-line）
-    video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
-    pc.addTrack(video_track)
-
-    # 设置远程描述
+    # 1. 先设置远程描述 — 让 aiortc 从 offer 创建正确的 transceiver（带 MID）
     offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
     await pc.setRemoteDescription(offer)
 
-    # 修复 aiortc: _offerDirection 可能为 None
-    offer_dir = "sendrecv"
-    for line in req.sdp.split("\n"):
-        stripped = line.strip().lower()
-        if stripped.startswith("a=sendonly"):
-            offer_dir = "sendonly"
+    # 2. 找到 offer 创建的 video transceiver，用 replaceTrack 设置发送 track
+    video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
+    transceivers = pc.getTransceivers()
+    attached = False
+    for t in transceivers:
+        if t.kind == "video" and t.sender.track is None:
+            await t.sender.replaceTrack(video_track)
+            attached = True
+            logger.info("视频 track 已附加到 offer transceiver (mid=%s, task=%s)", t.mid, task_id)
             break
-        elif stripped.startswith("a=recvonly"):
-            offer_dir = "recvonly"
-            break
-        elif stripped.startswith("a=inactive"):
-            offer_dir = "inactive"
-            break
+    if not attached:
+        # fallback: addTrack 创建新 transceiver
+        logger.warning("未找到可用 transceiver，回退到 addTrack (task=%s)", task_id)
+        pc.addTrack(video_track)
 
+    # 3. 修复 _offerDirection
     for t in pc.getTransceivers():
         if t._offerDirection is None:
-            t._offerDirection = offer_dir
-            logger.info("修复 _offerDirection → %s (task=%s)", offer_dir, task_id)
+            t._offerDirection = "sendrecv"
+            logger.info("修复 _offerDirection → sendrecv (task=%s)", task_id)
 
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
