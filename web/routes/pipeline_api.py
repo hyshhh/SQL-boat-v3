@@ -107,7 +107,7 @@ class PipelineVideoTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
         self._queue = frame_queue
         self._width = width
         self._height = height
-        self._pts = 0
+        self._start_time = time.monotonic()
 
     async def recv(self):
         try:
@@ -133,9 +133,10 @@ class PipelineVideoTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
         else:
             frame = frame_data
 
-        frame.pts = self._pts
-        frame.time_base = fractions.Fraction(1, 30)
-        self._pts += 1
+        # 使用实际经过时间作为 pts，避免帧率硬编码导致播放速度异常
+        elapsed = time.monotonic() - self._start_time
+        frame.pts = int(elapsed * 90000)  # 90kHz 时钟（WebRTC 标准）
+        frame.time_base = fractions.Fraction(1, 90000)
         return frame
 
 
@@ -2160,11 +2161,19 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
         logger.warning("未找到可用 transceiver，回退到 addTrack (task=%s)", task_id)
         pc.addTrack(video_track)
 
-    # 3. 修复 _offerDirection
+    # 3. 修复 _offerDirection（从 offer SDP 解析真实方向）
+    offer_dir = "sendrecv"
+    sdp_lower = req.sdp.lower()
+    if "a=sendonly" in sdp_lower:
+        offer_dir = "sendonly"
+    elif "a=recvonly" in sdp_lower:
+        offer_dir = "recvonly"
+    elif "a=inactive" in sdp_lower:
+        offer_dir = "inactive"
     for t in pc.getTransceivers():
         if t._offerDirection is None:
-            t._offerDirection = "sendrecv"
-            logger.info("修复 _offerDirection → sendrecv (task=%s)", task_id)
+            t._offerDirection = offer_dir
+            logger.info("修复 _offerDirection → %s (task=%s)", offer_dir, task_id)
 
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)

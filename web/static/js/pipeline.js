@@ -384,7 +384,7 @@ async function connectStreamWebRTC(taskId) {
   }
 }
 
-/** 断开 WebRTC 视频推流 */
+/** 断开 WebRTC 视频推流（服务器→浏览器方向） */
 function disconnectStreamWebRTC() {
   if (_webrtcPC) {
     _webrtcPC.onconnectionstatechange = null;
@@ -396,6 +396,15 @@ function disconnectStreamWebRTC() {
   if (videoEl) {
     videoEl.pause();
     videoEl.srcObject = null;
+  }
+}
+
+/** 断开摄像头 WebRTC（浏览器→服务器方向） */
+function disconnectCameraWebRTC() {
+  if (_camWebRTCPC) {
+    _camWebRTCPC.onconnectionstatechange = null;
+    _camWebRTCPC.close();
+    _camWebRTCPC = null;
   }
 }
 
@@ -905,13 +914,14 @@ function setupWebRTCCamera(taskId, stream) {
       pc.addEventListener('connectionstatechange', () => {
         if (pc.connectionState === 'failed') {
           showToast('WebRTC 连接失败', 'error');
+          disconnectCameraWebRTC();
         }
       });
 
     } catch (e) {
       console.error('WebRTC 连接失败:', e);
       showToast('WebRTC 连接失败: ' + e.message, 'error');
-      disconnectStreamWebRTC();
+      disconnectCameraWebRTC();
     }
   }
 
@@ -979,7 +989,9 @@ async function stopCameraPipeline() {
   stopCameraPolling();
   cameraTaskId = null;
 
-  // 断开摄像头 WebRTC 推流
+  // 断开摄像头 WebRTC（浏览器→服务器方向）
+  disconnectCameraWebRTC();
+  // 断开视频推流 WebRTC（服务器→浏览器方向）
   disconnectStreamWebRTC();
 
   // 停止浏览器摄像头采集
@@ -1049,6 +1061,7 @@ async function pollCameraStatus() {
       if (cameraTaskId === taskId) {
         stopCameraPolling();
         resetCameraButtons();
+        disconnectCameraWebRTC();
         disconnectStreamWebRTC();
         if (data.status === 'completed') {
           showToast('✅ 摄像头处理完成');
