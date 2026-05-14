@@ -1125,27 +1125,17 @@ async def _start_h264_reader(task_id: str, process: asyncio.subprocess.Process, 
                 pass
 
         async def feed_frames():
-            """从 pipeline stdout 读 raw 帧 → ffmpeg stdin + WebRTC 视频队列
+            """从 pipeline stdout 读 raw 帧 → WebRTC 队列 + ffmpeg stdin
 
-            readexactly 一次读完整帧（2.7MB@640x480），避免多次 read 拼接
-            带来的异步调度延迟。进程被杀时 IncompleteReadError 由 except 捕获。
-            帧同时分发给 ffmpeg（WebSocket fallback）和 WebRTC 视频推流队列。
+            帧先分发给 WebRTC（非阻塞），再写入 ffmpeg。
+            ffmpeg drain 加超时，防止编码慢阻塞整个循环导致 WebRTC 断供。
             """
             nonlocal running
             try:
                 while running:
                     data = await process.stdout.readexactly(frame_size)
-                    # 送入 ffmpeg（WebSocket 通道）
-                    if ffmpeg_proc.stdin and not ffmpeg_proc.stdin.is_closing():
-                        ffmpeg_proc.stdin.write(data)
-                        await ffmpeg_proc.stdin.drain()
-                        async with _state_lock:
-                            stream = _h264_streams.get(task_id)
-                            if stream:
-                                stream["frames_fed"] += 1
-                    else:
-                        break
-                    # 送入 WebRTC 视频推流队列
+
+                    # 1. 先送入 WebRTC 视频推流队列（非阻塞，保证 WebRTC 帧供应）
                     webrtc_q = _webrtc_video_queues.get(task_id)
                     if webrtc_q:
                         import numpy as np
@@ -1161,6 +1151,23 @@ async def _start_h264_reader(task_id: str, process: asyncio.subprocess.Process, 
                                 webrtc_q.put_nowait(frame)
                             except asyncio.QueueFull:
                                 pass
+
+                    # 2. 再送入 ffmpeg（WebSocket 通道，加超时防阻塞）
+                    if ffmpeg_proc.stdin and not ffmpeg_proc.stdin.is_closing():
+                        try:
+                            ffmpeg_proc.stdin.write(data)
+                            await asyncio.wait_for(ffmpeg_proc.stdin.drain(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("ffmpeg drain 超时，跳过当前写入 (task=%s)", task_id)
+                        except (BrokenPipeError, OSError):
+                            break
+                        else:
+                            async with _state_lock:
+                                stream = _h264_streams.get(task_id)
+                                if stream:
+                                    stream["frames_fed"] += 1
+                    else:
+                        break
             except (asyncio.IncompleteReadError, BrokenPipeError, OSError):
                 pass
             finally:
