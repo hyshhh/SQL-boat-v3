@@ -294,6 +294,10 @@ async function connectStreamWebRTC(taskId) {
     });
     _webrtcPC = pc;
 
+    // 添加 recvonly 视频 transceiver，确保 SDP offer 包含 video m-line
+    // 否则服务器端 aiortc 无法为无媒体的 offer 生成 answer
+    pc.addTransceiver('video', { direction: 'recvonly' });
+
     // 接收服务器视频轨道
     pc.ontrack = (event) => {
       console.log('收到视频轨道:', event.track.kind);
@@ -907,7 +911,7 @@ function setupWebRTCCamera(taskId, stream) {
     } catch (e) {
       console.error('WebRTC 连接失败:', e);
       showToast('WebRTC 连接失败: ' + e.message, 'error');
-      disconnectCameraWebRTC();
+      disconnectStreamWebRTC();
     }
   }
 
@@ -957,7 +961,7 @@ async function startCameraPipeline() {
     showToast('摄像头 Pipeline 已启动');
 
     // WebRTC 接收处理后的视频流
-    connectCameraWebRTC(cameraTaskId);
+    connectStreamWebRTC(cameraTaskId);
 
     startCameraPolling();
   } catch (e) {
@@ -976,7 +980,7 @@ async function stopCameraPipeline() {
   cameraTaskId = null;
 
   // 断开摄像头 WebRTC 推流
-  disconnectCameraWebRTC();
+  disconnectStreamWebRTC();
 
   // 停止浏览器摄像头采集
   if (browserCameraStream) {
@@ -1045,7 +1049,7 @@ async function pollCameraStatus() {
       if (cameraTaskId === taskId) {
         stopCameraPolling();
         resetCameraButtons();
-        disconnectCameraWebRTC();
+        disconnectStreamWebRTC();
         if (data.status === 'completed') {
           showToast('✅ 摄像头处理完成');
         } else if (data.status === 'failed') {
