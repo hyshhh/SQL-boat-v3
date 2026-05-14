@@ -2026,10 +2026,19 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
     offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
     await pc.setRemoteDescription(offer)
 
-    # 显式修复 transceiver 方向（防止 aiortc SDP 解析后 direction 为 None）
+    # 修复 aiortc SDP 协商: _offerDirection 可能为 None
     for t in pc.getTransceivers():
-        if t.direction is None:
-            t.direction = "sendrecv"
+        if t._offerDirection is None:
+            offer_dir = "sendrecv"
+            sdp_lower = req.sdp.lower()
+            if "a=sendonly" in sdp_lower:
+                offer_dir = "sendonly"
+            elif "a=recvonly" in sdp_lower:
+                offer_dir = "recvonly"
+            elif "a=inactive" in sdp_lower:
+                offer_dir = "inactive"
+            t._offerDirection = offer_dir
+            logger.info("修复摄像头 transceiver _offerDirection: %s", offer_dir)
 
     # 创建 answer
     answer = await pc.createAnswer()
@@ -2086,11 +2095,6 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
     pc.addTrack(video_track)
 
-    # 显式设置 transceiver 方向，防止 aiortc SDP 协商时 direction 为 None
-    for t in pc.getTransceivers():
-        if t.direction is None:
-            t.direction = "sendrecv"
-
     # DataChannel 用于控制信令（检测结果推送等）
     dc = pc.createDataChannel("control")
     _webrtc_dc[task_id] = dc
@@ -2110,6 +2114,22 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     # 设置远程描述
     offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
     await pc.setRemoteDescription(offer)
+
+    # 修复 aiortc SDP 协商: _offerDirection 可能为 None 导致 createAnswer 崩溃
+    for t in pc.getTransceivers():
+        if t._offerDirection is None:
+            # 从浏览器 offer SDP 中推断方向
+            offer_dir = "sendrecv"  # 默认值
+            sdp_lower = req.sdp.lower()
+            if "a=sendonly" in sdp_lower:
+                offer_dir = "sendonly"
+            elif "a=recvonly" in sdp_lower:
+                offer_dir = "recvonly"
+            elif "a=inactive" in sdp_lower:
+                offer_dir = "inactive"
+            t._offerDirection = offer_dir
+            logger.info("修复 transceiver _offerDirection: %s", offer_dir)
+
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
