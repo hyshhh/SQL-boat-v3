@@ -1144,7 +1144,7 @@ async def _start_h264_reader(task_id: str, process: asyncio.subprocess.Process, 
 
         async def read_ffmpeg_output():
             """从 ffmpeg stdout 读取 fMP4 数据，解析 box 并广播"""
-            nonlocal box_buffer, init_sent, running
+            nonlocal box_buffer, init_sent, running, _pending_moof
             try:
                 while running:
                     chunk = await ffmpeg_proc.stdout.read(262144)  # 256KB buffer
@@ -1678,6 +1678,11 @@ async def start_browser_camera(req: BrowserCameraStartRequest):
             # fd 重定向：把 stdout (fd=1) 指向 pipe_w
             # 这样 pipeline 的 open("/dev/stdout","wb") 写入的数据全部进入 pipe
             saved_stdout_fd = os.dup(1)
+            # 先 flush Python 缓冲区，防止残留数据写入 pipe
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
             os.dup2(pipe_w, 1)
 
             try:
@@ -1980,6 +1985,8 @@ class WebRTCOfferRequest(BaseModel):
 @router.post("/webrtc/offer/{task_id}")
 async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
     """WebRTC 信令端点：接收 SDP offer，返回 SDP answer"""
+    if not AIORTC_AVAILABLE:
+        raise HTTPException(status_code=501, detail="aiortc 未安装，WebRTC 不可用")
     from aiortc import RTCPeerConnection, RTCSessionDescription
 
     async with _state_lock:
