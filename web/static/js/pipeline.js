@@ -368,7 +368,7 @@ async function connectStreamWebRTC(taskId) {
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      throw new Error(err.detail || 'WebRTC 信令失败');
+      throw new Error(`[${resp.status}] ${err.detail || 'WebRTC 信令失败'}`);
     }
 
     const answer = await resp.json();
@@ -896,8 +896,8 @@ function setupWebRTCCamera(taskId, stream) {
       });
 
       if (!resp.ok) {
-        const err = await resp.json();
-        throw new Error(err.detail || 'WebRTC 信令失败');
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(`[${resp.status}] ${err.detail || 'WebRTC 信令失败'}`);
       }
 
       const answer = await resp.json();

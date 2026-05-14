@@ -2041,7 +2041,11 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
     frames_dir = _get_browser_frames_dir(task_id) if not use_queue else None
 
     # 创建 PeerConnection
-    pc = RTCPeerConnection(configuration=_get_rtc_config())
+    try:
+        pc = RTCPeerConnection(configuration=_get_rtc_config())
+    except Exception as e:
+        logger.error("摄像头 RTCPeerConnection 创建失败 [%s]: %s", task_id, e)
+        raise HTTPException(status_code=500, detail=f"RTCPeerConnection 创建失败: {e}")
     _camera_webrtc_pcs[task_id] = pc
 
     @pc.on("connectionstatechange")
@@ -2055,27 +2059,38 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
             except Exception:
                 pass
 
-    # 设置远程描述（浏览器的 offer）
-    offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
-    await pc.setRemoteDescription(offer)
+    try:
+        # 设置远程描述（浏览器的 offer）
+        offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
+        await pc.setRemoteDescription(offer)
 
-    # 修复 aiortc SDP 协商: _offerDirection 可能为 None
-    for t in pc.getTransceivers():
-        if t._offerDirection is None:
-            offer_dir = "sendrecv"
-            sdp_lower = req.sdp.lower()
-            if "a=sendonly" in sdp_lower:
-                offer_dir = "sendonly"
-            elif "a=recvonly" in sdp_lower:
-                offer_dir = "recvonly"
-            elif "a=inactive" in sdp_lower:
-                offer_dir = "inactive"
-            t._offerDirection = offer_dir
-            logger.info("修复摄像头 transceiver _offerDirection: %s", offer_dir)
+        # 修复 aiortc SDP 协商: _offerDirection 可能为 None
+        for t in pc.getTransceivers():
+            if t._offerDirection is None:
+                offer_dir = "sendrecv"
+                sdp_lower = req.sdp.lower()
+                if "a=sendonly" in sdp_lower:
+                    offer_dir = "sendonly"
+                elif "a=recvonly" in sdp_lower:
+                    offer_dir = "recvonly"
+                elif "a=inactive" in sdp_lower:
+                    offer_dir = "inactive"
+                t._offerDirection = offer_dir
+                logger.info("修复摄像头 transceiver _offerDirection: %s", offer_dir)
 
-    # 创建 answer
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+        # 创建 answer
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+    except Exception as e:
+        logger.error("摄像头 WebRTC 信令协商失败 [%s]: %s\ntype=%s\noffer SDP (前500字):\n%s",
+                     task_id, e, type(e).__name__, req.sdp[:500], exc_info=True)
+        _camera_webrtc_pcs.pop(task_id, None)
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"WebRTC 协商失败: {type(e).__name__}: {e}")
 
     # 等待 ICE 候选收集完成
     if pc.iceGatheringState != "complete":
@@ -2134,7 +2149,12 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     _webrtc_video_queues[task_id] = frame_queue
 
     # 创建 PeerConnection
-    pc = RTCPeerConnection(configuration=_get_rtc_config())
+    try:
+        pc = RTCPeerConnection(configuration=_get_rtc_config())
+    except Exception as e:
+        logger.error("RTCPeerConnection 创建失败 [%s]: %s", task_id, e)
+        _webrtc_video_queues.pop(task_id, None)
+        raise HTTPException(status_code=500, detail=f"RTCPeerConnection 创建失败: {e}")
     _video_webrtc_pcs[task_id] = pc
 
     @pc.on("connectionstatechange")
@@ -2149,41 +2169,56 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
             except Exception:
                 pass
 
-    # 1. 先设置远程描述 — 让 aiortc 从 offer 创建正确的 transceiver（带 MID）
-    offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
-    await pc.setRemoteDescription(offer)
+    try:
+        # 1. 先设置远程描述 — 让 aiortc 从 offer 创建正确的 transceiver（带 MID）
+        offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
+        await pc.setRemoteDescription(offer)
+        logger.info("setRemoteDescription 成功 (task=%s)", task_id)
 
-    # 2. 找到 offer 创建的 video transceiver，用 replaceTrack 设置发送 track
-    video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
-    transceivers = pc.getTransceivers()
-    attached = False
-    for t in transceivers:
-        if t.kind == "video" and t.sender.track is None:
-            await t.sender.replaceTrack(video_track)
-            attached = True
-            logger.info("视频 track 已附加到 offer transceiver (mid=%s, task=%s)", t.mid, task_id)
-            break
-    if not attached:
-        # fallback: addTrack 创建新 transceiver
-        logger.warning("未找到可用 transceiver，回退到 addTrack (task=%s)", task_id)
-        pc.addTrack(video_track)
+        # 2. 找到 offer 创建的 video transceiver，用 replaceTrack 设置发送 track
+        video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
+        transceivers = pc.getTransceivers()
+        attached = False
+        for t in transceivers:
+            if t.kind == "video" and t.sender.track is None:
+                await t.sender.replaceTrack(video_track)
+                attached = True
+                logger.info("视频 track 已附加到 offer transceiver (mid=%s, task=%s)", t.mid, task_id)
+                break
+        if not attached:
+            # fallback: addTrack 创建新 transceiver
+            logger.warning("未找到可用 transceiver，回退到 addTrack (task=%s)", task_id)
+            pc.addTrack(video_track)
 
-    # 3. 修复 _offerDirection（从 offer SDP 解析真实方向）
-    offer_dir = "sendrecv"
-    sdp_lower = req.sdp.lower()
-    if "a=sendonly" in sdp_lower:
-        offer_dir = "sendonly"
-    elif "a=recvonly" in sdp_lower:
-        offer_dir = "recvonly"
-    elif "a=inactive" in sdp_lower:
-        offer_dir = "inactive"
-    for t in pc.getTransceivers():
-        if t._offerDirection is None:
-            t._offerDirection = offer_dir
-            logger.info("修复 _offerDirection → %s (task=%s)", offer_dir, task_id)
+        # 3. 修复 _offerDirection（从 offer SDP 解析真实方向）
+        offer_dir = "sendrecv"
+        sdp_lower = req.sdp.lower()
+        if "a=sendonly" in sdp_lower:
+            offer_dir = "sendonly"
+        elif "a=recvonly" in sdp_lower:
+            offer_dir = "recvonly"
+        elif "a=inactive" in sdp_lower:
+            offer_dir = "inactive"
+        for t in pc.getTransceivers():
+            if t._offerDirection is None:
+                t._offerDirection = offer_dir
+                logger.info("修复 _offerDirection → %s (task=%s)", offer_dir, task_id)
 
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        logger.info("createAnswer 成功 (task=%s)", task_id)
+
+    except Exception as e:
+        logger.error("WebRTC 信令协商失败 [%s]: %s\ntype=%s\noffer SDP (前500字):\n%s",
+                     task_id, e, type(e).__name__, req.sdp[:500], exc_info=True)
+        # 清理失败的 PC
+        _video_webrtc_pcs.pop(task_id, None)
+        _webrtc_video_queues.pop(task_id, None)
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"WebRTC 协商失败: {type(e).__name__}: {e}")
 
     # 等待 ICE 候选收集完成（否则 answer SDP 里可能没有 candidates）
     if pc.iceGatheringState != "complete":
