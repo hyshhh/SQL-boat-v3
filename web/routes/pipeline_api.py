@@ -2091,10 +2091,6 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     pc = RTCPeerConnection(configuration=config)
     _video_webrtc_pcs[task_id] = pc
 
-    # DataChannel 用于控制信令（检测结果推送等）
-    dc = pc.createDataChannel("control")
-    _webrtc_dc[task_id] = dc
-
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
         logger.info("WebRTC 视频推流连接状态: %s, task=%s", pc.connectionState, task_id)
@@ -2107,15 +2103,15 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
             except Exception:
                 pass
 
-    # 添加视频 Track（必须在 setRemoteDescription 之前）
-    video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
-    pc.addTrack(video_track)
-
-    # 设置远程描述
+    # 1. 先设置远程描述 — 让 aiortc 从 offer SDP 创建 transceiver（正确分配 MID）
     offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
     await pc.setRemoteDescription(offer)
 
-    # 修复 aiortc: _offerDirection 可能为 None，从 SDP 推断并设置
+    # 2. 添加视频 Track
+    video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
+    pc.addTrack(video_track)
+
+    # 3. 修复 aiortc: _offerDirection 可能为 None
     offer_dir = "sendrecv"
     for line in req.sdp.split("\n"):
         stripped = line.strip().lower()
@@ -2133,6 +2129,10 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
         if t._offerDirection is None:
             t._offerDirection = offer_dir
             logger.info("修复 _offerDirection → %s (task=%s)", offer_dir, task_id)
+
+    # 4. DataChannel（在 setRemoteDescription 之后创建，避免空 MID 污染 BUNDLE）
+    dc = pc.createDataChannel("control")
+    _webrtc_dc[task_id] = dc
 
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
