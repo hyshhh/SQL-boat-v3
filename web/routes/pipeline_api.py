@@ -2044,6 +2044,20 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
+    # 等待 ICE 候选收集完成
+    if pc.iceGatheringState != "complete":
+        gather_done = asyncio.Event()
+        @pc.on("icegatheringstatechange")
+        async def _on_ice_gather():
+            if pc.iceGatheringState == "complete":
+                gather_done.set()
+        try:
+            await asyncio.wait_for(gather_done.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("摄像头 ICE 候选收集超时 (5s)")
+
+    logger.info("摄像头 WebRTC answer SDP (task=%s):\n%s", task_id, pc.localDescription.sdp[:500])
+
     # 启动帧接收（后台任务）
     asyncio.create_task(_receive_webrtc_camera_frames(
         pc, task_id, frame_queue, use_queue, frames_dir
@@ -2132,6 +2146,20 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
 
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
+
+    # 等待 ICE 候选收集完成（否则 answer SDP 里可能没有 candidates）
+    if pc.iceGatheringState != "complete":
+        gather_done = asyncio.Event()
+        @pc.on("icegatheringstatechange")
+        async def _on_ice_gather():
+            if pc.iceGatheringState == "complete":
+                gather_done.set()
+        try:
+            await asyncio.wait_for(gather_done.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("ICE 候选收集超时 (5s)，使用已收集的候选")
+
+    logger.info("WebRTC answer SDP (task=%s):\n%s", task_id, pc.localDescription.sdp[:500])
 
     return {
         "sdp": pc.localDescription.sdp,
