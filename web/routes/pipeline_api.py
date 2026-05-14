@@ -24,7 +24,7 @@ from config import load_config
 
 # ── WebRTC 支持（可选依赖）──
 try:
-    from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration
+    from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration, RTCIceServer
     from aiortc.mediastreams import MediaStreamError
     AIORTC_AVAILABLE = True
 except ImportError:
@@ -66,15 +66,16 @@ def _get_rtc_config():
         # 默认使用 Google 公共 STUN
         ice_servers_raw = [{"urls": "stun:stun.l.google.com:19302"}]
 
-    # 转换为 aiortc RTCIceServer 格式
+    # 转换为 aiortc RTCIceServer 对象
     servers = []
     for s in ice_servers_raw:
-        server = {"urls": s["urls"]}
+        urls = s["urls"]
+        kwargs = {"urls": urls}
         if "username" in s:
-            server["username"] = s["username"]
+            kwargs["username"] = s["username"]
         if "credential" in s:
-            server["credential"] = s["credential"]
-        servers.append(server)
+            kwargs["credential"] = s["credential"]
+        servers.append(RTCIceServer(**kwargs))
 
     return RTCConfiguration(iceServers=servers)
 
