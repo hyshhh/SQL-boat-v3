@@ -63,6 +63,12 @@ webrtc:
   ice_servers:
     - urls: "stun:stun.l.google.com:19302"
     - urls: "stun:stun1.l.google.com:19302"
+    # TURN 中继（STUN 穿透失败时的 fallback，解决跨 NAT 连接问题）
+    # 免费 TURN：https://www.metered.ca/tools/openrelay/ 注册获取
+    # 或自建：https://github.com/coturn/coturn
+    # - urls: "turn:your-turn-server:3478"
+    #   username: "your-username"
+    #   credential: "your-password"
   video_width: 640
   video_height: 480
   video_fps: 15
