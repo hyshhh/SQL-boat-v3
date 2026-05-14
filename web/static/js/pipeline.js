@@ -395,6 +395,152 @@ function disconnectStreamWebRTC() {
   }
 }
 
+// ── 视频 Demo H.264 WebSocket 推流 ──
+let _streamH264Ws = null;
+let _streamH264MediaSource = null;
+let _streamH264SourceBuffer = null;
+let _streamH264Queue = [];
+
+/** H.264 WebSocket 推流接收（视频 Demo 用，替代 WebRTC） */
+function connectStreamH264(taskId) {
+  disconnectStreamH264();
+
+  const videoEl = document.getElementById('streamVideo');
+  if (!videoEl) return;
+
+  const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl = `${wsProto}://${location.host}${PIPE_API}/ws/h264/${taskId}`;
+
+  const ms = new MediaSource();
+  videoEl.src = URL.createObjectURL(ms);
+  videoEl.load();
+  _streamH264MediaSource = ms;
+  _streamH264SourceBuffer = null;
+  _streamH264Queue = [];
+
+  ms.addEventListener('sourceopen', () => {
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    _streamH264Ws = ws;
+
+    let frameCount = 0;
+    let fpsTimer = performance.now();
+
+    function _processQueue() {
+      const sb = _streamH264SourceBuffer;
+      if (!sb || sb.updating) return;
+      try {
+        const vEl = document.getElementById('streamVideo');
+        if (vEl && sb.buffered.length > 0 && sb.buffered.start(0) < vEl.currentTime - 8) {
+          sb.remove(sb.buffered.start(0), vEl.currentTime - 3);
+          return;
+        }
+      } catch (e) {}
+      if (_streamH264Queue.length > 0) {
+        try { sb.appendBuffer(_streamH264Queue.shift()); } catch (e) {
+          if (e.name === 'QuotaExceededError') {
+            _streamH264Queue.length = 0;
+            try {
+              const vEl = document.getElementById('streamVideo');
+              if (vEl && sb.buffered.length > 0) sb.remove(sb.buffered.start(0), vEl.currentTime);
+            } catch (e2) {}
+          }
+        }
+      }
+    }
+
+    ws.onmessage = (evt) => {
+      if (evt.data instanceof ArrayBuffer) {
+        const view = new DataView(evt.data);
+        const msgType = view.getUint8(0);
+        const payload = evt.data.slice(5);
+
+        if (msgType === 0x01) {
+          // Init segment
+          if (_streamH264SourceBuffer) {
+            if (!_streamH264SourceBuffer.updating) {
+              try { _streamH264SourceBuffer.appendBuffer(payload); } catch (e) {}
+            }
+            return;
+          }
+          try {
+            if (ms.readyState !== 'open') return;
+            const sb = ms.addSourceBuffer('video/mp4; codecs="avc1.42C01F"');
+            _streamH264SourceBuffer = sb;
+            sb.addEventListener('updateend', () => { _processQueue(); });
+            sb.appendBuffer(payload);
+          } catch (e) {
+            console.error('MSE SourceBuffer 创建失败:', e);
+          }
+        } else if (msgType === 0x02) {
+          // Media segment
+          const sb = _streamH264SourceBuffer;
+          if (!sb) return;
+          if (sb.updating) {
+            if (_streamH264Queue.length >= 12) _streamH264Queue = _streamH264Queue.slice(-6);
+            _streamH264Queue.push(payload);
+          } else {
+            try { sb.appendBuffer(payload); } catch (e) {
+              if (e.name === 'QuotaExceededError') {
+                try {
+                  const vEl = document.getElementById('streamVideo');
+                  if (vEl && sb.buffered.length > 0) sb.remove(sb.buffered.start(0), vEl.currentTime - 2);
+                } catch (e2) {}
+                _streamH264Queue.unshift(payload);
+              }
+            }
+          }
+          frameCount++;
+          const now = performance.now();
+          if (now - fpsTimer > 1000) {
+            const fps = (frameCount * 1000 / (now - fpsTimer)).toFixed(1);
+            const fpsEl = document.getElementById('streamFps');
+            if (fpsEl) fpsEl.textContent = `${fps} seg/s`;
+            frameCount = 0;
+            fpsTimer = now;
+          }
+        }
+      } else {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'done') {
+            disconnectStreamH264();
+            const fpsEl = document.getElementById('streamFps');
+            if (fpsEl) fpsEl.textContent = '处理完成';
+          }
+        } catch {}
+      }
+    };
+
+    ws.onclose = () => {
+      if (currentTaskId === taskId) {
+        _scheduleReconnect('h264-stream', () => {
+          if (currentTaskId === taskId) connectStreamH264(taskId);
+        }, taskId);
+      }
+    };
+    ws.onerror = () => {};
+
+    const fpsEl = document.getElementById('streamFps');
+    if (fpsEl) fpsEl.textContent = 'WebSocket H.264 已连接';
+  });
+}
+
+function disconnectStreamH264() {
+  _clearReconnect('h264-stream');
+  if (_streamH264Ws) { _streamH264Ws.onclose = null; _streamH264Ws.close(); _streamH264Ws = null; }
+  if (_streamH264MediaSource && _streamH264MediaSource.readyState === 'open') {
+    try { _streamH264MediaSource.endOfStream(); } catch {}
+  }
+  _streamH264MediaSource = null;
+  _streamH264SourceBuffer = null;
+  _streamH264Queue = [];
+  const videoEl = document.getElementById('streamVideo');
+  if (videoEl) { videoEl.pause(); videoEl.src = ''; }
+  const fpsEl = document.getElementById('streamFps');
+  if (fpsEl) fpsEl.textContent = '';
+}
+
 /** 渲染检测框（WebRTC DataChannel 接收） */
 function renderDetections(detections) {
   // 预留接口：后续在视频上绘制检测框

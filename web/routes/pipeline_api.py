@@ -2026,6 +2026,11 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
     offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
     await pc.setRemoteDescription(offer)
 
+    # 显式修复 transceiver 方向（防止 aiortc SDP 解析后 direction 为 None）
+    for t in pc.getTransceivers():
+        if t.direction is None:
+            t.direction = "sendrecv"
+
     # 创建 answer
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
@@ -2080,6 +2085,11 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     # 添加视频 Track
     video_track = PipelineVideoTrack(frame_queue, width=640, height=480)
     pc.addTrack(video_track)
+
+    # 显式设置 transceiver 方向，防止 aiortc SDP 协商时 direction 为 None
+    for t in pc.getTransceivers():
+        if t.direction is None:
+            t.direction = "sendrecv"
 
     # DataChannel 用于控制信令（检测结果推送等）
     dc = pc.createDataChannel("control")
