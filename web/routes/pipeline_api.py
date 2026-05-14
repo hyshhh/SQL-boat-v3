@@ -905,7 +905,9 @@ async def stop_pipeline(task_id: str):
     pc = _camera_webrtc_pcs.pop(task_id, None)
     if pc:
         try:
-            await pc.close()
+            _coro = pc.close()
+            if asyncio.iscoroutine(_coro):
+                await _coro
             logger.info("WebRTC 摄像头 PeerConnection 已关闭: %s", task_id)
         except Exception:
             pass
@@ -914,7 +916,9 @@ async def stop_pipeline(task_id: str):
     video_pc = _video_webrtc_pcs.pop(task_id, None)
     if video_pc:
         try:
-            await video_pc.close()
+            _coro = video_pc.close()
+            if asyncio.iscoroutine(_coro):
+                await _coro
             logger.info("WebRTC 视频推流 PeerConnection 已关闭: %s", task_id)
         except Exception:
             pass
@@ -1752,7 +1756,9 @@ async def start_browser_camera(req: BrowserCameraStartRequest):
                 pc = _camera_webrtc_pcs.pop(task_id, None)
                 if pc:
                     try:
-                        await asyncio.wait_for(pc.close(), timeout=3.0)
+                        _coro = pc.close()
+                        if asyncio.iscoroutine(_coro):
+                            await asyncio.wait_for(_coro, timeout=3.0)
                     except Exception:
                         pass
                 await _stop_h264_stream(task_id)
@@ -1936,7 +1942,9 @@ async def _receive_webrtc_camera_frames(
     if video_track is None:
         logger.error("WebRTC 无视频 track: %s", task_id)
         _camera_webrtc_pcs.pop(task_id, None)
-        await pc.close()
+        _coro = pc.close()
+        if asyncio.iscoroutine(_coro):
+            await _coro
         return
 
     logger.info("WebRTC 视频 track 已就绪: %s", task_id)
@@ -1996,7 +2004,9 @@ async def _receive_webrtc_camera_frames(
         logger.info("WebRTC 帧接收结束: %s (共 %d 帧)", task_id, frame_count)
         _camera_webrtc_pcs.pop(task_id, None)
         try:
-            await asyncio.wait_for(pc.close(), timeout=3.0)
+            _coro = pc.close()
+            if asyncio.iscoroutine(_coro):
+                await asyncio.wait_for(_coro, timeout=3.0)
         except Exception:
             pass
         if use_queue and frame_queue:
@@ -2033,7 +2043,9 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
     old_pc = _camera_webrtc_pcs.pop(task_id, None)
     if old_pc:
         try:
-            await old_pc.close()
+            _coro = old_pc.close()
+            if asyncio.iscoroutine(_coro):
+                await _coro
         except Exception:
             pass
 
@@ -2056,18 +2068,22 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
         if pc.connectionState in ("failed", "closed"):
             _camera_webrtc_pcs.pop(task_id, None)
             try:
-                await asyncio.wait_for(pc.close(), timeout=3.0)
+                _coro = pc.close()
+                if asyncio.iscoroutine(_coro):
+                    await asyncio.wait_for(_coro, timeout=3.0)
             except Exception:
                 pass
 
     try:
         # 设置远程描述（浏览器的 offer）
         offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
-        await pc.setRemoteDescription(offer)
+        _coro = pc.setRemoteDescription(offer)
+        if asyncio.iscoroutine(_coro):
+            await _coro
 
         # 修复 aiortc SDP 协商: _offerDirection 可能为 None
         for t in pc.getTransceivers():
-            if t._offerDirection is None:
+            if getattr(t, '_offerDirection', None) is None:
                 offer_dir = "sendrecv"
                 sdp_lower = req.sdp.lower()
                 if "a=sendonly" in sdp_lower:
@@ -2076,19 +2092,25 @@ async def webrtc_offer(task_id: str, req: WebRTCOfferRequest):
                     offer_dir = "recvonly"
                 elif "a=inactive" in sdp_lower:
                     offer_dir = "inactive"
-                t._offerDirection = offer_dir
+                if hasattr(t, '_offerDirection'):
+                    t._offerDirection = offer_dir
                 logger.info("修复摄像头 transceiver _offerDirection: %s", offer_dir)
 
         # 创建 answer
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
+        _answer = pc.createAnswer()
+        answer = await _answer if asyncio.iscoroutine(_answer) else _answer
+        _coro2 = pc.setLocalDescription(answer)
+        if asyncio.iscoroutine(_coro2):
+            await _coro2
 
     except Exception as e:
         logger.error("摄像头 WebRTC 信令协商失败 [%s]: %s\ntype=%s\noffer SDP (前500字):\n%s",
                      task_id, e, type(e).__name__, req.sdp[:500], exc_info=True)
         _camera_webrtc_pcs.pop(task_id, None)
         try:
-            await pc.close()
+            _coro3 = pc.close()
+            if asyncio.iscoroutine(_coro3):
+                await _coro3
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"WebRTC 协商失败: {type(e).__name__}: {e}")
@@ -2141,7 +2163,9 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
     old_pc = _video_webrtc_pcs.pop(task_id, None)
     if old_pc:
         try:
-            await old_pc.close()
+            _coro = old_pc.close()
+            if asyncio.iscoroutine(_coro):
+                await _coro
         except Exception:
             pass
 
@@ -2166,14 +2190,18 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
             _webrtc_video_queues.pop(task_id, None)
             _webrtc_dc.pop(task_id, None)
             try:
-                await pc.close()
+                _coro = pc.close()
+                if asyncio.iscoroutine(_coro):
+                    await _coro
             except Exception:
                 pass
 
     try:
         # 1. 先设置远程描述 — 让 aiortc 从 offer 创建正确的 transceiver（带 MID）
         offer = RTCSessionDescription(sdp=req.sdp, type=req.type)
-        await pc.setRemoteDescription(offer)
+        _coro = pc.setRemoteDescription(offer)
+        if asyncio.iscoroutine(_coro):
+            await _coro
         logger.info("setRemoteDescription 成功 (task=%s)", task_id)
 
         # 2. 找到 offer 创建的 video transceiver，用 replaceTrack 设置发送 track
@@ -2204,12 +2232,16 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
         elif "a=inactive" in sdp_lower:
             offer_dir = "inactive"
         for t in pc.getTransceivers():
-            if t._offerDirection is None:
-                t._offerDirection = offer_dir
+            if getattr(t, '_offerDirection', None) is None:
+                if hasattr(t, '_offerDirection'):
+                    t._offerDirection = offer_dir
                 logger.info("修复 _offerDirection → %s (task=%s)", offer_dir, task_id)
 
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
+        _answer = pc.createAnswer()
+        answer = await _answer if asyncio.iscoroutine(_answer) else _answer
+        _coro2 = pc.setLocalDescription(answer)
+        if asyncio.iscoroutine(_coro2):
+            await _coro2
         logger.info("createAnswer 成功 (task=%s)", task_id)
 
     except Exception as e:
@@ -2219,7 +2251,9 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
         _video_webrtc_pcs.pop(task_id, None)
         _webrtc_video_queues.pop(task_id, None)
         try:
-            await pc.close()
+            _coro3 = pc.close()
+            if asyncio.iscoroutine(_coro3):
+                await _coro3
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"WebRTC 协商失败: {type(e).__name__}: {e}")
