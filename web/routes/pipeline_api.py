@@ -2182,7 +2182,10 @@ async def webrtc_video_signal(task_id: str, req: WebRTCSignalRequest):
         attached = False
         for t in transceivers:
             if t.kind == "video" and t.sender.track is None:
-                await t.sender.replaceTrack(video_track)
+                # replaceTrack 在部分 aiortc 版本中不是协程
+                result = t.sender.replaceTrack(video_track)
+                if asyncio.iscoroutine(result):
+                    await result
                 attached = True
                 logger.info("视频 track 已附加到 offer transceiver (mid=%s, task=%s)", t.mid, task_id)
                 break
